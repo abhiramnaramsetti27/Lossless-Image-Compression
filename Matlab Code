@@ -1,0 +1,379 @@
+classdef lossless_compression_app < matlab.apps.AppBase
+
+    % Properties that correspond to app components
+    properties (Access = public)
+        UIFigure           matlab.ui.Figure
+        btnConvertGray     matlab.ui.control.Button
+        btnDownload        matlab.ui.control.Button
+        lblStatus          matlab.ui.control.Label
+        lblHuff            matlab.ui.control.Label
+        lblRLE             matlab.ui.control.Label
+        btnRLEDecompress   matlab.ui.control.Button
+        btnHuffCompress    matlab.ui.control.Button
+        btnLoad            matlab.ui.control.Button
+        btnRLECompress     matlab.ui.control.Button
+        btnHuffDecompress  matlab.ui.control.Button
+        axGray             matlab.ui.control.UIAxes
+        axOriginal         matlab.ui.control.UIAxes
+        axDecoded          matlab.ui.control.UIAxes
+    end
+
+    
+    properties (Access = private)
+       Image
+        GrayImage
+        RLEData
+        HuffData
+        Dict
+        DecodedImage
+    end
+
+    % Callbacks that handle component events
+    methods (Access = private)
+
+        % Button pushed function: btnLoad
+        function btnLoadButtonPushed(app, event)
+               [file, path] = uigetfile({'*.jpg;*.png;*.bmp','Image Files'});
+            if isequal(file,0)
+                return;
+            end
+            app.Image = imread(fullfile(path, file));
+            imshow(app.Image, 'Parent', app.axOriginal);
+            title(app.axOriginal, 'Original Image');
+            app.lblStatus.Text = 'Image Loaded ✅';
+        end
+
+        % Button pushed function: btnRLECompress
+        function btnRLECompressButtonPushed(app, event)
+try
+                if isempty(app.Image)
+                    uialert(app.UIFigure, 'Please load an image first.', 'Error');
+                    return;
+                end
+
+                app.lblStatus.Text = 'Performing RLE Compression...';
+                drawnow;
+
+                img = app.Image;
+
+                % Convert to grayscale if it's a color image
+                if size(img, 3) == 3
+                    img = rgb2gray(img);
+                end
+
+                % Flatten image into 1D vector
+                img_vector = img(:);
+
+                % Compute run-length encoding manually
+                run_values = img_vector([true; diff(img_vector) ~= 0]);
+                run_lengths = diff([find([true; diff(img_vector) ~= 0]); numel(img_vector) + 1]);
+
+                % Store compressed data
+                app.RLEData = [run_values run_lengths];
+
+                % Calculate compression ratio
+                original_size = numel(img_vector);
+                compressed_size = numel(run_values) * 2; % value + length
+                ratio = original_size / compressed_size;
+
+                app.lblRLE.Text = sprintf('RLE Ratio: %.2f', ratio);
+                app.lblStatus.Text = 'RLE Compression Done ✅';
+                drawnow;
+
+            catch ME
+                uialert(app.UIFigure, ['Error in RLE Compression: ' ME.message], 'Error');
+                app.lblStatus.Text = 'Error in RLE Compression ❌';
+            end
+        end
+
+        % Button pushed function: btnRLEDecompress
+        function btnRLEDecompressButtonPushed(app, event)
+      try
+        if isempty(app.RLEData)
+            uialert(app.UIFigure, 'Please perform RLE compression first.', 'Error');
+            return;
+        end
+
+        app.lblStatus.Text = 'Performing RLE Decompression...';
+        drawnow;
+
+        rle_data = app.RLEData;
+
+        % Determine image size (from GrayImage or Original)
+        if ~isempty(app.GrayImage)
+            sz = size(app.GrayImage);
+        else
+            sz = size(rgb2gray(app.Image));
+        end
+
+        total_pixels = prod(sz);
+
+        % Preallocate output safely
+        decoded_vector = zeros(total_pixels, 1, 'uint8');
+        pos = 1;
+
+        % Loop over RLE pairs safely
+        for i = 1:size(rle_data, 1)
+            run_value = uint8(rle_data(i, 1));
+            run_length = rle_data(i, 2);
+
+            % Clamp if run goes out of bounds
+            endPos = min(pos + run_length - 1, total_pixels);
+
+            decoded_vector(pos:endPos) = run_value;
+            pos = endPos + 1;
+
+            if pos > total_pixels
+                break; % stop once image filled
+            end
+        end
+
+        % Final check (truncate if any extra)
+        decoded_vector = decoded_vector(1:total_pixels);
+
+        % Reshape to image size
+        decoded_img = reshape(decoded_vector, sz);
+        imshow(decoded_img, 'Parent', app.axDecoded);
+        title(app.axDecoded, 'RLE Decompressed Image');
+
+        app.DecodedImage = decoded_img;
+        app.lblStatus.Text = 'RLE Decompression Done ✅';
+        drawnow;
+
+    catch ME
+        uialert(app.UIFigure, ['Error in RLE Decompression: ' ME.message], 'Error');
+        app.lblStatus.Text = 'Error in RLE Decompression ❌';
+    end
+        end
+
+        % Button pushed function: btnHuffCompress
+        function btnHuffCompressButtonPushed(app, event)
+    try
+        if isempty(app.Image)
+            uialert(app.UIFigure, 'Please load an image first.', 'Error');
+            return;
+        end
+
+        img = app.Image;
+
+        % ✅ Convert color image to grayscale automatically
+        if size(img,3) == 3
+            img = rgb2gray(img);
+            app.lblStatus.Text = 'Color image converted to grayscale for Huffman compression.';
+            drawnow;
+        end
+
+        img_vector = double(img(:));
+
+        % Status update
+        app.lblStatus.Text = 'Huffman Compression Running...';
+        drawnow;
+
+        % Compute unique symbols and probabilities efficiently
+        [symbols, ~, idx] = unique(img_vector);
+        counts = accumarray(idx, 1);
+        prob = counts / numel(img_vector);
+
+        % Build Huffman dictionary
+        dict = huffmandict(symbols, prob);
+
+        % Encode data
+        encoded = huffmanenco(img_vector, dict);
+
+        % Store for decompression
+        app.HuffData = encoded;
+        app.Dict = dict;
+        app.Image = img;  % Ensure decompression uses grayscale image
+
+        % Compute compression ratio
+        ratio = (numel(img_vector) * 8) / numel(encoded);
+
+        % Update UI
+        app.lblHuff.Text = sprintf('Huffman Ratio: %.2f', ratio);
+        app.lblStatus.Text = 'Huffman Compression Done';
+        drawnow;
+
+    catch ME
+        uialert(app.UIFigure, ['Error in Huffman Compression: ' ME.message], 'Error');
+    end
+        end
+
+        % Button pushed function: btnHuffDecompress
+        function btnHuffDecompressButtonPushed(app, event)
+     try
+        if isempty(app.HuffData) || isempty(app.Dict)
+            uialert(app.UIFigure, 'Please perform Huffman compression first.', 'Error');
+            return;
+        end
+
+        app.lblStatus.Text = 'Huffman Decompression Running...';
+        drawnow;
+
+        % Decode Huffman data
+        decoded = huffmandeco(app.HuffData, app.Dict);
+
+        % Reshape decoded data back to image
+        decoded_img = reshape(uint8(decoded), size(app.Image));
+
+        % Display and store
+        imshow(decoded_img, 'Parent', app.axDecoded);
+        app.DecodedImage = decoded_img;  %  store for download
+        app.lblStatus.Text = 'Huffman Decompression Done';
+        drawnow;
+
+    catch ME
+        uialert(app.UIFigure, ['Error in Huffman Decompression: ' ME.message], 'Error');
+    end
+        end
+
+        % Button pushed function: btnDownload
+        function btnDownloadPushed(app, event)
+         if isempty(app.DecodedImage)
+                uialert(app.UIFigure, 'No decompressed image to save.', 'Error');
+                return;
+            end
+            [file, path] = uiputfile({'*.png';'*.jpg'}, 'Save Decompressed Image');
+            if isequal(file, 0)
+                return;
+            end
+            imwrite(app.DecodedImage, fullfile(path, file));
+            app.lblStatus.Text = 'Decompressed Image Saved ✅';
+        end
+
+        % Button pushed function: btnConvertGray
+        function btnConvertGrayButtonPushed(app, event)
+              if isempty(app.Image)
+                uialert(app.UIFigure, 'Load an image first.', 'Error');
+                return;
+            end
+            app.GrayImage = rgb2gray(app.Image);
+            imshow(app.GrayImage, 'Parent', app.axGray);
+            title(app.axGray, 'Grayscale Image');
+            app.lblStatus.Text = 'Converted to Grayscale ✅';
+
+        end
+    end
+
+    % Component initialization
+    methods (Access = private)
+
+        % Create UIFigure and components
+        function createComponents(app)
+
+            % Create UIFigure and hide until all components are created
+            app.UIFigure = uifigure('Visible', 'off');
+            app.UIFigure.Position = [100 100 640 480];
+            app.UIFigure.Name = 'MATLAB App';
+
+            % Create axDecoded
+            app.axDecoded = uiaxes(app.UIFigure);
+            title(app.axDecoded, 'Decoded Image')
+            xlabel(app.axDecoded, 'X')
+            ylabel(app.axDecoded, 'Y')
+            zlabel(app.axDecoded, 'Z')
+            app.axDecoded.Position = [423 349 189 116];
+
+            % Create axOriginal
+            app.axOriginal = uiaxes(app.UIFigure);
+            title(app.axOriginal, 'Original Image')
+            xlabel(app.axOriginal, 'X')
+            ylabel(app.axOriginal, 'Y')
+            zlabel(app.axOriginal, 'Z')
+            app.axOriginal.Position = [9 343 200 129];
+
+            % Create axGray
+            app.axGray = uiaxes(app.UIFigure);
+            title(app.axGray, 'Gray Code')
+            xlabel(app.axGray, 'X')
+            ylabel(app.axGray, 'Y')
+            zlabel(app.axGray, 'Z')
+            app.axGray.Position = [208 343 197 123];
+
+            % Create btnHuffDecompress
+            app.btnHuffDecompress = uibutton(app.UIFigure, 'push');
+            app.btnHuffDecompress.ButtonPushedFcn = createCallbackFcn(app, @btnHuffDecompressButtonPushed, true);
+            app.btnHuffDecompress.Position = [245 262 107 22];
+            app.btnHuffDecompress.Text = 'Huff Decompress';
+
+            % Create btnRLECompress
+            app.btnRLECompress = uibutton(app.UIFigure, 'push');
+            app.btnRLECompress.ButtonPushedFcn = createCallbackFcn(app, @btnRLECompressButtonPushed, true);
+            app.btnRLECompress.Position = [133 295 100 22];
+            app.btnRLECompress.Text = 'RLE Compress';
+
+            % Create btnLoad
+            app.btnLoad = uibutton(app.UIFigure, 'push');
+            app.btnLoad.ButtonPushedFcn = createCallbackFcn(app, @btnLoadButtonPushed, true);
+            app.btnLoad.Position = [19 295 100 22];
+            app.btnLoad.Text = 'Load Image';
+
+            % Create btnHuffCompress
+            app.btnHuffCompress = uibutton(app.UIFigure, 'push');
+            app.btnHuffCompress.ButtonPushedFcn = createCallbackFcn(app, @btnHuffCompressButtonPushed, true);
+            app.btnHuffCompress.Position = [133 262 100 22];
+            app.btnHuffCompress.Text = 'Huff Compress';
+
+            % Create btnRLEDecompress
+            app.btnRLEDecompress = uibutton(app.UIFigure, 'push');
+            app.btnRLEDecompress.ButtonPushedFcn = createCallbackFcn(app, @btnRLEDecompressButtonPushed, true);
+            app.btnRLEDecompress.Position = [244 295 108 22];
+            app.btnRLEDecompress.Text = 'RLE Decompress';
+
+            % Create lblRLE
+            app.lblRLE = uilabel(app.UIFigure);
+            app.lblRLE.Position = [13 217 192 22];
+            app.lblRLE.Text = 'RLE Ratio';
+
+            % Create lblHuff
+            app.lblHuff = uilabel(app.UIFigure);
+            app.lblHuff.Position = [13 176 270 22];
+            app.lblHuff.Text = 'Huff Ratio';
+
+            % Create lblStatus
+            app.lblStatus = uilabel(app.UIFigure);
+            app.lblStatus.FontWeight = 'bold';
+            app.lblStatus.Position = [13 138 295 22];
+            app.lblStatus.Text = 'Status';
+
+            % Create btnDownload
+            app.btnDownload = uibutton(app.UIFigure, 'push');
+            app.btnDownload.ButtonPushedFcn = createCallbackFcn(app, @btnDownloadPushed, true);
+            app.btnDownload.Position = [371 283 100 22];
+            app.btnDownload.Text = 'DOWNLOAD';
+
+            % Create btnConvertGray
+            app.btnConvertGray = uibutton(app.UIFigure, 'push');
+            app.btnConvertGray.ButtonPushedFcn = createCallbackFcn(app, @btnConvertGrayButtonPushed, true);
+            app.btnConvertGray.Position = [14 262 109 22];
+            app.btnConvertGray.Text = 'Gray Code Image';
+
+            % Show the figure after all components are created
+            app.UIFigure.Visible = 'on';
+        end
+    end
+
+    % App creation and deletion
+    methods (Access = public)
+
+        % Construct app
+        function app = lossless_compression_app
+
+            % Create UIFigure and components
+            createComponents(app)
+
+            % Register the app with App Designer
+            registerApp(app, app.UIFigure)
+
+            if nargout == 0
+                clear app
+            end
+        end
+
+        % Code that executes before app deletion
+        function delete(app)
+
+            % Delete UIFigure when app is deleted
+            delete(app.UIFigure)
+        end
+    end
+end
